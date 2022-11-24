@@ -1,0 +1,102 @@
+# The CPU Architecture to run the job on
+arch: amd64
+
+# Defines environment variables globally. Job level property overrides global variables
+env:
+  global:
+    - PROJECT_NAME="HelloWorld"
+    - PROJECT_VERSION="0.0.1"
+    - ENVIRONMENT_NAME="TEST" # PROD
+
+# Default language to run tests in
+language: java
+
+# The Ubuntu distribution to use
+dist: bionic
+
+# The Operating System to run the job on
+os: linux
+
+# Specifies the order of build stages. All jobs in one stage must complete before next stage is executed.
+stages:
+  - build
+  - sign
+
+jobs:
+  include:
+    - stage: build
+      # The job name
+      name: build-maven
+      # The Ubuntu distribution to use
+      dist: bionic
+      # Use docker command for signing   
+      services:
+        - docker
+      # Use dotnet-cli to build the project
+      language: java
+      # Java version to build the project
+      jdk: 
+      - oraclejdk17
+      # Cache m2 directory in order to speed up
+      cache:
+        directories:
+        - $HOME/.m2
+      # Before script to run before building the project
+      before_script: 
+        # Created directories for artifacts
+        - mkdir -p ${TRAVIS_BUILD_DIR}/artifacts
+        - mkdir -p ${TRAVIS_BUILD_DIR}/packages
+        # Set Maven build options
+        - export MAVEN_CLI_OPTS="--batch-mode --errors --fail-at-end --show-version -DinstallAtEnd=true -DdeployAtEnd=true"
+      # Script to build the project
+      script: 
+        # Build Maven project with Maven Options
+        - mvn $MAVEN_CLI_OPTS clean install -f pom.xml
+         # Copy built artifacts to artifacts directory
+        - cp target/${PROJECT_NAME}-${PROJECT_VERSION}.jar ${TRAVIS_BUILD_DIR}/packages/${PROJECT_NAME}.jar
+      # Used to specify a list of files and directories that should be attached to the job if it succeeds.
+      workspaces:
+        create:
+          name: maven-jar-artifacts
+          paths:
+            # Save artifact in order to use signing job
+            - ${TRAVIS_BUILD_DIR}/packages/${PROJECT_NAME}.jar
+
+    - stage: sign
+      # The job name
+      name: sign-maven-artifacts
+      # The Ubuntu distribution to use
+      dist: bionic
+      # Use docker command for signing   
+      services:
+        - docker
+      # Defines environment variables for specific jobs.
+      env:
+        COMMAND="sign"
+      # Use dotnet-cli to build the project
+      language: java
+      # Java version to build the project
+      jdk: 
+      - oraclejdk17
+      # Before script to run before building the project
+      before_script: 
+        # Created directories for artifacts
+        - mkdir -p ${TRAVIS_BUILD_DIR}/artifacts
+        - mkdir -p ${TRAVIS_BUILD_DIR}/packages
+      # Script to build the project
+      script: 
+        # Docker Pull CodeSigner Docker Image
+        - docker pull ghcr.io/sslcom/codesigner:latest
+        # Sign artifact with CodeSigner docker image
+        - docker run -i --rm --dns 8.8.8.8 --network host --volume ${TRAVIS_BUILD_DIR}/packages:/codesign/examples --volume ${TRAVIS_BUILD_DIR}/artifacts:/codesign/output 
+          -e USERNAME=${USERNAME} -e PASSWORD=${PASSWORD} -e CREDENTIAL_ID=${CREDENTIAL_ID} -e TOTP_SECRET=${TOTP_SECRET} -e ENVIRONMENT_NAME=${ENVIRONMENT_NAME} 
+          ghcr.io/sslcom/codesigner:latest ${COMMAND} -input_file_path=/codesign/examples/${PROJECT_NAME}.jar -output_dir_path=/codesign/output
+      # Used to specify a list of files and directories that should be attached to the job if it succeeds.
+      workspaces:
+        use:
+          - maven-jar-artifacts
+        create:
+          name: maven-signed-artifacts
+          paths:
+            # Save signed artifact
+            - ${TRAVIS_BUILD_DIR}/artifacts/${PROJECT_NAME}.jar
